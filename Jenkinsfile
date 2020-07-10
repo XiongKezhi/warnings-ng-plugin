@@ -1,89 +1,82 @@
-node ('maven') {
-    timeout(200) {
-        stage ('Linux Checkout') {
-            checkout scm
+node {
+    stage ('Checkout') {
+        git branch:'master', url: 'https://github.com/XiongKezhi/warnings-ng-plugin.git'
+    }
+
+    stage ('Build and Static Analysis') {
+        withMaven {
+            sh 'mvn -V -e clean verify -Dmaven.test.failure.ignore -Dgpg.skip'
         }
 
-        stage ('Linux Build') {
-            String jdk = '8'
-            String jdkTool = "jdk${jdk}"
-            List<String> env = [
-                    "JAVA_HOME=${tool jdkTool}",
-                    'PATH+JAVA=${JAVA_HOME}/bin',
-            ]
-            String command
-            List<String> mavenOptions = [
-                    '--batch-mode',
-                    '--errors',
-                    '--update-snapshots',
-                    '-Dmaven.test.failure.ignore',
-            ]
-            if (jdk.toInteger() > 7 && infra.isRunningOnJenkinsInfra()) {
-                /* Azure mirror only works for sufficiently new versions of the JDK due to Letsencrypt cert */
-                def settingsXml = "${pwd tmp: true}/settings-azure.xml"
-                writeFile file: settingsXml, text: libraryResource('settings-azure.xml')
-                mavenOptions += "-s $settingsXml"
-            }
-            mavenOptions += "clean verify jacoco:prepare-agent test integration-test jacoco:report -Djenkins.test.timeout=1000"
-            command = "mvn ${mavenOptions.join(' ')}"
-            env << "PATH+MAVEN=${tool 'mvn'}/bin"
+        recordIssues tools: [java(), javaDoc()], aggregatingResults: 'true', id: 'java', name: 'Java'
+        recordIssues tool: errorProne(), healthy: 1, unhealthy: 20
 
-            withEnv(env) {
-                sh command
-            }
+        junit testResults: '**/target/*-reports/TEST-*.xml'
 
-            archiveArtifacts artifacts: '**/target/*.hpi', fingerprint: true
+        recordIssues tools: [checkStyle(pattern: 'target/checkstyle-result.xml'),
+            spotBugs(pattern: 'target/spotbugsXml.xml'),
+            pmdParser(pattern: 'target/pmd.xml'),
+            cpd(pattern: 'target/cpd.xml'),
+            taskScanner(highTags:'FIXME', normalTags:'TODO', includePattern: '**/*.java', excludePattern: 'target/**/*')],
+            qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true]]
+    }
 
-            junit testResults: '**/target/*-reports/TEST-*.xml'
-
-            recordIssues enabledForFailure: true, tool: mavenConsole(), referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            recordIssues enabledForFailure: true, tools: [java(), javaDoc()], sourceCodeEncoding: 'UTF-8', referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            recordIssues enabledForFailure: true, tool: checkStyle(pattern: 'target/checkstyle-result.xml'), sourceCodeEncoding: 'UTF-8', referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            recordIssues enabledForFailure: true, tool: cpd(pattern: 'target/cpd.xml'), sourceCodeEncoding: 'UTF-8', referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            recordIssues enabledForFailure: true, tool: pmdParser(pattern: 'target/pmd.xml'), sourceCodeEncoding: 'UTF-8', referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            recordIssues enabledForFailure: true, tool: spotBugs(pattern: 'target/spotbugsXml.xml'), sourceCodeEncoding: 'UTF-8', referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            recordIssues enabledForFailure: true, tool: taskScanner(includePattern:'**/*.java', excludePattern:'target/**/*,**/TaskScannerTest*', highTags:'FIXME', normalTags:'TODO'), sourceCodeEncoding: 'UTF-8', referenceJobName: 'Plugins/warnings-ng-plugin/master'
-            jacoco()
-            sh "curl -s https://codecov.io/bash | bash -s - -t c4071f73-a222-43ff-a41b-a6c8c118e242"
+    stage ('Line and Branch Coverage') {
+        withMaven {
+            sh "mvn -V -U -e jacoco:prepare-agent test jacoco:report -Dmaven.test.failure.ignore"
         }
+        publishCoverage adapters: [jacocoAdapter('**/*/jacoco.xml')], sourceFileResolver: sourceFiles('STORE_ALL_BUILD')
+    }
+
+    stage ('Mutation Coverage') {
+        withMaven {
+            sh "mvn org.pitest:pitest-maven:mutationCoverage"
+        }
+        step([$class: 'PitPublisher', mutationStatsFile: 'target/pit-reports/**/mutations.xml'])
+    }
+
+    stage ('Collect Maven Warnings') {
+        recordIssues tool: mavenConsole()
     }
 }
+node {
+    stage ('Checkout') {
+        git branch:'master', url: 'https://github.com/uhafner/codingstyle.git'
+    }
 
-node ('windows') {
-    timeout(200) {
-        stage ('Windows Checkout') {
-            checkout scm
+    stage ('Build and Static Analysis') {
+        withMaven {
+            sh 'mvn -V -e clean verify -Dmaven.test.failure.ignore -Dgpg.skip'
         }
 
-        stage ('Windows Build') {
-            String jdk = '8'
-            String jdkTool = "jdk${jdk}"
-            List<String> env = [
-                    "JAVA_HOME=${tool jdkTool}",
-                    'PATH+JAVA=${JAVA_HOME}/bin',
-            ]
-            String command
-            List<String> mavenOptions = [
-                    '--batch-mode',
-                    '--errors',
-                    '--update-snapshots',
-                    '-Dmaven.test.failure.ignore',
-            ]
-            if (jdk.toInteger() > 7 && infra.isRunningOnJenkinsInfra()) {
-                /* Azure mirror only works for sufficiently new versions of the JDK due to Letsencrypt cert */
-                def settingsXml = "${pwd tmp: true}/settings-azure.xml"
-                writeFile file: settingsXml, text: libraryResource('settings-azure.xml')
-                mavenOptions += "-s $settingsXml"
-            }
-            mavenOptions += "clean verify -Djenkins.test.timeout=1000"
-            command = "mvn ${mavenOptions.join(' ')}"
-            env << "PATH+MAVEN=${tool 'mvn'}/bin"
+        recordIssues tools: [java(), javaDoc()], aggregatingResults: 'true', id: 'java', name: 'Java'
+        recordIssues tool: errorProne(), healthy: 1, unhealthy: 20
 
-            withEnv(env) {
-                bat command
-            }
+        junit testResults: '**/target/*-reports/TEST-*.xml'
 
-            junit testResults: '**/target/*-reports/TEST-*.xml'
+        recordIssues tools: [checkStyle(pattern: 'target/checkstyle-result.xml'),
+            spotBugs(pattern: 'target/spotbugsXml.xml'),
+            pmdParser(pattern: 'target/pmd.xml'),
+            cpd(pattern: 'target/cpd.xml'),
+            taskScanner(highTags:'FIXME', normalTags:'TODO', includePattern: '**/*.java', excludePattern: 'target/**/*')],
+            qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true]]
+    }
+
+    stage ('Line and Branch Coverage') {
+        withMaven {
+            sh "mvn -V -U -e jacoco:prepare-agent test jacoco:report -Dmaven.test.failure.ignore"
         }
+        publishCoverage adapters: [jacocoAdapter('**/*/jacoco.xml')], sourceFileResolver: sourceFiles('STORE_ALL_BUILD')
+    }
+
+    stage ('Mutation Coverage') {
+        withMaven {
+            sh "mvn org.pitest:pitest-maven:mutationCoverage"
+        }
+        step([$class: 'PitPublisher', mutationStatsFile: 'target/pit-reports/**/mutations.xml'])
+    }
+
+    stage ('Collect Maven Warnings') {
+        recordIssues tool: mavenConsole()
     }
 }
